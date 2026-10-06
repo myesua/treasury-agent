@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Treasury Agent — Kits 1+2 demo</title>
+<style>
+:root{--bg:#f4f0e6;--ink:#1c1a17;--mut:#6f6a5f;--line:#e2dccb;--card:#fff;--acc:#b3542e;--good:#2e7d4f;--warn:#8a6100}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,sans-serif;background:var(--bg);color:var(--ink)}
+.wrap{max-width:880px;margin:0 auto;padding:24px 18px 60px}
+.bar{display:flex;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+.tabs{display:flex;gap:8px;margin:16px 0}
+.tab{flex:1;border:1px solid var(--line);background:#fff;border-radius:12px;padding:10px;cursor:pointer;font-weight:600;font-size:13px}
+.tab.on{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin:10px 0}
+.badge{display:inline-block;font-size:11px;font-weight:700;color:#fff;border-radius:99px;padding:3px 10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 13px;font-weight:600;cursor:pointer;font-size:13px}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+.small{font-size:12px;color:var(--mut)}
+pre{background:#fbf9f3;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;overflow:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><div><b>Treasury Agent</b><div class="small">Kit 1 Adaptive Treasury + Kit 2 Intent-Bound Purchase · Airwallex sandbox</div></div></div>
+  <div class="tabs">
+    <button class="tab on" id="t1">Kit 1 · Treasury Controller</button>
+    <button class="btn tab" id="t2">Kit 2 · Purchase Agent</button>
+  </div>
+  <div id="out"><p class="small">Pick a kit, then run.</p></div>
+  <div class="row"><button class="primary" id="run">Run decision</button></div>
+</div>
+<script>
+let kit = 'kit1';
+const set = id => { kit = id; document.getElementById('t1').classList.toggle('on', id==='kit1'); document.getElementById('t2').classList.toggle('on', id==='kit2'); };
+document.getElementById('t1').onclick = () => set('kit1');
+document.getElementById('t2').onclick = () => set('kit2');
+const badge = a => `<span class="badge" style="background:${a==='fund'||a==='convert'?'var(--good)':a==='defer'||a==='monthly'?'var(--warn)':'#991b1b'}">${a.toUpperCase()}</span>`;
+document.getElementById('run').onclick = async () => {
+  const url = kit === 'kit1' ? '/api/kit1/decide' : '/api/kit2/evaluate';
+  const body = kit === 'kit1' ? { preset: 'kit1' } : {};
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  let html = '';
+  if (kit === 'kit1') {
+    html = `<div class="card"><b>Safe to spend (USD): $${j.safe_usd}</b> <span class="small">after $${5000} reserve floor</span></div>` +
+      j.decisions.map(d => `<div class="card">${badge(d.action)} <b>${d.obligation_id}</b> — $${d.amount} ${d.currency}<br/><span class="small">${d.reason}${d.needs_person ? ' · needs a person' : ''}</span></div>`).join('');
+  } else {
+    html = `<div class="card">${badge(j.choice)} <b>${j.choice} billing</b><br/><span class="small">${j.reason} · reconsider ${j.reconsider_on}</span><pre>${JSON.stringify(j.card_policy, null, 2)}</pre><div class="small">Simulated charge $${j.simulated_charge.amount}: ${j.simulated_charge.verdict} (${j.simulated_charge.reason})</div></div>`;
+  }
+  document.getElementById('out').innerHTML = html;
+};
+</script>
+</body>
+</html>

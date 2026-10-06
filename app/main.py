@@ -1,0 +1,141 @@
+"""Demo API: Kit 1 treasury + Kit 2 purchase over the decision engine.
+
+Sandbox-backed routes call Airwallex; /demo/* routes run fully offline on
+fixtures so the video never depends on network.
+"""
+from __future__ import annotations
+
+import os
+from decimal import Decimal
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from app.services.purchase import auth_outcome, build_card_policy, evaluate_terms
+from app.services.treasury import Obligation, TreasuryPolicy, TreasuryState, decide, safe_to_spend
+
+app = FastAPI(title="treasury-agent", version="0.1.0")
+
+
+def _client():
+    from app.services.airwallex_client import AirwallexClient
+
+    c = AirwallexClient()
+    if not c.client_id or not c.api_key or "put_" in c.client_id:
+        raise RuntimeError("live sandbox not configured — see docs/SETUP.md")
+    return c
+
+BASE = os.path.dirname(os.path.dirname(__file__))
+app.mount("/sim", StaticFiles(directory=os.path.join(BASE, "simulator"), html=True), name="sim")
+
+
+class BriefIn(BaseModel):
+    preset: str = "kit1"
+
+
+KIT1_FIXTURES = [
+    {"id": "ship", "label": "Shipping invoice (ops stop without it)", "amount": "3000", "currency": "USD", "due_hours": 24, "stops_operations": True},
+    {"id": "supplier", "label": "Supplier EUR, waiting on payment", "amount": "2000", "currency": "EUR", "due_hours": 12, "time_sensitive": True},
+    {"id": "tool", "label": "Small tool renewal", "amount": "200", "currency": "USD", "due_hours": 200},
+    {"id": "ads", "label": "Ad platform top-up", "amount": "1500", "currency": "USD", "due_hours": 48},
+    {"id": "loan", "label": "Founder loan repayment", "amount": "4000", "currency": "USD", "due_hours": 70},
+]
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "kits": ["kit1", "kit2"]}
+
+
+@app.post("/api/kit1/decide")
+def kit1(body: BriefIn):
+    obs = [
+        Obligation(o["id"], o["label"], Decimal(o["amount"]), o["currency"], o["due_hours"],
+                   stops_operations=o.get("stops_operations", False), time_sensitive=o.get("time_sensitive", False))
+        for o in KIT1_FIXTURES
+    ]
+    cash = {"USD": Decimal("10000"), "EUR": Decimal("5000")}
+    policy = TreasuryPolicy()
+    decisions = decide(obs, cash, policy)
+    return {
+        "safe_usd": str(safe_to_spend(cash["USD"], policy.reserve_floor)),
+        "decisions": [vars(d) | {"amount": str(d.amount)} for d in decisions],
+        "live": False,
+    }
+
+
+class TermsIn(BaseModel):
+    annual_total: str = "9840"
+    monthly_year_total: str = "12000"
+    reserve_week7: str = "4200"
+
+
+@app.post("/api/kit2/evaluate")
+def kit2(body: TermsIn):
+    d = evaluate_terms(Decimal(body.annual_total), Decimal(body.monthly_year_total),
+                       Decimal("5000"), {7: Decimal(body.reserve_week7)})
+    price = Decimal("99") if d.choice == "monthly" else Decimal("9840")
+    verdict, reason = auth_outcome(price, d.card_policy)
+    return {
+        "choice": d.choice, "reason": d.reason, "reconsider_on": d.reconsider_on,
+        "card_policy": d.card_policy,
+        "simulated_charge": {"amount": str(price), "verdict": verdict, "reason": reason},
+        "live": False,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return '<meta http-equiv="refresh" content="0;url=/sim/">'
+
+
+# --- live sandbox routes (need .env; 501-style JSON when unconfigured) ---
+@app.get("/api/live/balances")
+def live_balances():
+    try:
+        return {"balances": _client().balances(), "live": True}
+    except Exception as e:
+        return {"error": str(e)[:200], "live": False}
+
+
+class DepositIn(BaseModel):
+    currency: str = "USD"
+    amount: str = "5000"
+
+
+@app.post("/api/kit1/deposit-recalc")
+def kit1_recalc(body: DepositIn):
+    """Simulate a deposit landing, then recalculate only pending decisions."""
+    from decimal import Decimal
+
+    obs = [
+        Obligation(o["id"], o["label"], Decimal(o["amount"]), o["currency"], o["due_hours"],
+                   stops_operations=o.get("stops_operations", False), time_sensitive=o.get("time_sensitive", False))
+        for o in KIT1_FIXTURES
+    ]
+    st = TreasuryState(cash_by_currency={"USD": Decimal("100"), "EUR": Decimal("100")})
+    st.decisions = decide(obs, st.cash_by_currency, TreasuryPolicy())  # cash-starved first pass
+    before = [d.action for d in st.decisions]
+    fresh = st.recalculate_on_deposit(body.currency, Decimal(body.amount), obs, TreasuryPolicy())
+    return {
+        "before": before,
+        "fresh": [vars(d) | {"amount": str(d.amount)} for d in fresh],
+        "cash": {k: str(v) for k, v in st.cash_by_currency.items()},
+        "live": False,
+    }
+
+
+class CardSimIn(BaseModel):
+    card_policy: dict = {}
+    charge_amount: str = "99"
+
+
+@app.post("/api/kit2/simulate-charge")
+def kit2_charge(body: CardSimIn):
+    from decimal import Decimal
+
+    policy = body.card_policy or build_card_policy("monthly")
+    verdict, reason = auth_outcome(Decimal(body.charge_amount), policy)
+    return {"amount": body.charge_amount, "verdict": verdict, "reason": reason, "live": False}
