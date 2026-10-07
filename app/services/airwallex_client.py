@@ -81,7 +81,8 @@ class AirwallexClient:
     def fx_quote(self, buy_currency: str, sell_currency: str, buy_amount: str) -> dict:
         return self.post(
             "/api/v1/fx/quotes/create",
-            {"buy_currency": buy_currency, "sell_currency": sell_currency, "buy_amount": buy_amount},
+            {"buy_currency": buy_currency, "sell_currency": sell_currency,
+             "buy_amount": buy_amount, "validity": "MIN_30"},
         )
 
     def fx_convert(self, buy_currency: str, sell_currency: str, buy_amount: str, quote_id: str = "") -> dict:

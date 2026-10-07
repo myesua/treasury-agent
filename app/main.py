@@ -176,6 +176,90 @@ def kit1_execute(body: ExecuteIn):
     return {"plan": plan, "live": False}
 
 
+class LiveConvertIn(BaseModel):
+    buy_amount_eur: str = "50"
+    supplier_iban: str = "DE89370400440532013000"
+    supplier_swift: str = "DEUTDEFF"
+    supplier_name: str = "Demo Supplier GmbH"
+    transfer_amount_eur: str = "20"
+
+
+@app.post("/api/kit1/execute-live")
+def kit1_execute_live(body: LiveConvertIn):
+    """Kit 1 centerpiece: FX quote -> convert (single-use quote) -> supplier
+    beneficiary -> transfer -> simulated settlement. Small sandbox amounts."""
+    from app.services.airwallex_client import new_request_id
+
+    try:
+        c = _client()
+    except Exception as e:
+        return {"error": str(e)[:200], "live": False}
+    trail: dict = {"live": True, "steps": {}}
+    try:
+        q = c.fx_quote("EUR", "USD", body.buy_amount_eur)
+        quote_id = q.get("quote_id") or (q.get("data") or {}).get("quote_id", "")
+        trail["steps"]["quote"] = {"quote_id": quote_id, "buy": body.buy_amount_eur}
+        conv = c.fx_convert("EUR", "USD", body.buy_amount_eur, quote_id)
+        trail["steps"]["conversion"] = {"id": conv.get("id", ""), "status": conv.get("status", "")}
+        import time as _time
+
+        ben, ben_id, last_err = {}, "", None
+        ben_rid = new_request_id()  # one id for all retries: duplicates rejected, never double-created
+        for _ in range(3):
+            try:
+                ben = c.post("/api/v1/beneficiaries/create", {
+                    "beneficiary": {
+                        "entity_type": "COMPANY",
+                        "beneficiary_name": body.supplier_name,
+                        "bank_details": {"account_name": body.supplier_name, "iban": body.supplier_iban,
+                                        "swift_code": body.supplier_swift,
+                                        "bank_country_code": "DE", "account_currency": "EUR"},
+                        "address": {"country_code": "DE", "city": "Berlin", "street_address": "1 Demo Strasse",
+                                    "postcode": "10115"},
+                    },
+                    "transfer_methods": ["SWIFT"],
+                }, request_id=ben_rid)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                _time.sleep(3)
+        if last_err is not None:
+            raise last_err
+        ben_id = ben.get("id") or ben.get("beneficiary_id", "")
+        trail["steps"]["beneficiary"] = {"id": ben_id}
+        tr = c.post("/api/v1/transfers/create", {
+            "source_currency": "EUR",
+            "transfer_currency": "EUR", "transfer_amount": float(body.transfer_amount_eur),
+            "transfer_method": "SWIFT", "beneficiary_id": ben_id,
+            "reason": "supplier_payment", "reference": "SUP-2026-001",
+        }, request_id=new_request_id())
+        tid = tr.get("id") or tr.get("transfer_id", "")
+        trail["steps"]["transfer"] = {"id": tid, "status": tr.get("status", "")}
+        sent = c.post(f"/api/v1/simulation/transfers/{tid}/transition",
+                      {"next_status": "SENT"}, request_id=new_request_id())
+        trail["steps"]["sim_sent"] = {"status": sent.get("status", sent)}
+        paid = c.post(f"/api/v1/simulation/transfers/{tid}/transition",
+                      {"next_status": "PAID"}, request_id=new_request_id())
+        trail["steps"]["sim_paid"] = {"status": paid.get("status", paid)}
+        return trail
+    except Exception as e:
+        msg = str(e)
+        detail = ""
+        try:
+            import httpx as _hx
+
+            if isinstance(e, _hx.HTTPStatusError) and e.response is not None:
+                detail = e.response.text[:400]
+        except Exception:
+            pass
+        trail["steps"]["failed_at"] = msg[:160]
+        trail["error"] = msg[:200]
+        trail["detail"] = detail
+        trail["live"] = False
+        return trail
+
+
 class LiveIssuingIn(BaseModel):
     first_name: str = "Demo"
     last_name: str = "Founder"
