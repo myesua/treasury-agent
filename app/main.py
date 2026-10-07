@@ -143,3 +143,95 @@ def kit2_charge(body: CardSimIn):
     policy = body.card_policy or build_card_policy("monthly")
     verdict, reason = auth_outcome(Decimal(body.charge_amount), policy)
     return {"amount": body.charge_amount, "verdict": verdict, "reason": reason, "live": False}
+
+
+class ExecuteIn(BaseModel):
+    decisions: list[dict] = []
+    approved_obligations: list[str] = []  # obligation ids the person approved
+
+
+@app.post("/api/kit1/execute")
+def kit1_execute(body: ExecuteIn):
+    """Approval-gated execution plan. Live money movement happens in the
+    build-week pass against the funded sandbox; this endpoint proves the
+    gating + idempotency contract offline."""
+    from decimal import Decimal
+
+    from app.services.execute import Executor
+
+    ex = Executor()
+    plan = []
+    for d in body.decisions:
+        amt = Decimal(str(d.get("amount", "0")))
+        oid = str(d.get("obligation_id", "x"))
+        gate = ex.gate(d.get("action", ""), amt, d.get("currency", "USD"))
+        if gate and oid not in body.approved_obligations:
+            plan.append({"decision": d, "status": "awaiting_person", "approval_id": gate.id,
+                         "needs": f"person approves {amt} {d.get('currency', 'USD')} (over {ex.autonomous_limit} limit)"})
+        else:
+            rid = f"demo-{oid}"
+            first = ex.claim_request_id(rid)
+            plan.append({"decision": d, "status": "locked" if first else "duplicate_blocked",
+                         "request_id": rid})
+    return {"plan": plan, "live": False}
+
+
+class LiveIssuingIn(BaseModel):
+    first_name: str = "Demo"
+    last_name: str = "Founder"
+    email: str = "demo-founder@example.com"
+
+
+@app.post("/api/kit2/setup-live")
+def kit2_setup_live(body: LiveIssuingIn):
+    """Create a real cardholder + virtual card in the sandbox, then freeze it.
+    Proves the issuing path end to end. Sandbox only.
+    NOTE: sandbox account needs issuing enabled (devhelp@airwallex.com) —
+    without it, card create returns 'not allowed to set card type'."""
+    try:
+        c = _client()
+    except Exception as e:
+        return {"error": str(e)[:200], "live": False}
+
+    def call(path: str, payload: dict):
+        from app.services.airwallex_client import new_request_id
+
+        try:
+            return {"ok": True, "data": c.post(path, payload, request_id=new_request_id())}
+        except Exception as e:
+            msg = str(e)
+            detail = ""
+            try:
+                import httpx as _hx
+
+                if isinstance(e, _hx.HTTPStatusError) and e.response is not None:
+                    detail = e.response.text[:300]
+            except Exception:
+                pass
+            return {"ok": False, "error": msg[:160], "detail": detail}
+
+    holder = call("/api/v1/issuing/cardholders/create", {
+        "type": "DELEGATE", "email": body.email,
+        "first_name": body.first_name, "last_name": body.last_name})
+    if not holder["ok"]:
+        return {"error": holder["error"], "detail": holder.get("detail", ""), "live": False,
+                "hint": "cardholder create failed — check payload shape"}
+    hid = holder["data"].get("id") or holder["data"].get("cardholder_id", "")
+    card = call("/api/v1/issuing/cards/create", {
+        "cardholder_id": hid, "created_by": f"{body.first_name} {body.last_name}",
+        "form_factor": "VIRTUAL", "is_personalized": True,
+        "program": {"purpose": "COMMERCIAL", "type": "PREPAID"},
+        "authorization_controls": {
+            "allowed_transaction_count": "MULTIPLE",
+            "transaction_limits": {"currency": "USD", "limits": [
+                {"amount": 500, "interval": "PER_TRANSACTION"},
+                {"amount": 6000, "interval": "ALL_TIME"}]},
+            "allowed_currencies": ["USD"]}})
+    if not card["ok"]:
+        return {"cardholder": holder["data"], "error": card["error"], "detail": card.get("detail", ""),
+                "live": False,
+                "hint": "account needs issuing enabled — email devhelp@airwallex.com"}
+    cid = card["data"].get("card_id", "")
+    frozen = call(f"/api/v1/issuing/cards/{cid}/update", {"card_status": "INACTIVE"})
+    return {"cardholder": holder["data"], "card": card["data"],
+            "frozen": frozen.get("data", frozen), "live": True}

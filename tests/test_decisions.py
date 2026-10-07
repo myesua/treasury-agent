@@ -68,6 +68,22 @@ def test_card_limits_inclusive():
     assert auth_outcome(D("100.01"), build_card_policy("monthly", D("100")))[0] == "FAILED"
 
 
+def test_approval_gate_and_duplicate_lock():
+    from app.services.execute import Executor
+
+    ex = Executor(autonomous_limit=D("2000"))
+    assert ex.gate("transfer", D("500"), "USD") is None
+    ap = ex.gate("transfer", D("5000"), "USD")
+    assert ap and ap.status == "pending"
+    assert ex.approve(ap.id).status == "approved"
+    rid = "11111111-2222-3333-4444-555555555555"
+    assert ex.claim_request_id(rid) is True
+    assert ex.claim_request_id(rid) is False  # retry must stop, query first
+    assert Executor.is_terminal("PAID") and Executor.is_terminal("CANCELLED")
+    assert not Executor.is_terminal("SENT")  # in-flight, never final
+    assert Executor.needs_replacement("CANCELLED")
+
+
 def test_live_client_refuses_without_creds(monkeypatch):
     import os
 
