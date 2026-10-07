@@ -29,7 +29,8 @@ pre{background:#fbf9f3;border:1px solid var(--line);border-radius:10px;padding:1
     <button class="btn tab" id="t2">Kit 2 · Purchase Agent</button>
   </div>
   <div id="out"><p class="small">Pick a kit, then run.</p></div>
-  <div class="row"><button class="primary" id="run">Run decision</button></div>
+  <div class="row"><button class="primary" id="run">Run decision</button><button id="exec" title="Kit 1 only">Execute live (Kit 1)</button></div>
+  <div id="trail"></div>
 </div>
 <script>
 let kit = 'kit1';
@@ -37,8 +38,7 @@ const set = id => { kit = id; document.getElementById('t1').classList.toggle('on
 document.getElementById('t1').onclick = () => set('kit1');
 document.getElementById('t2').onclick = () => set('kit2');
 const badge = a => `<span class="badge" style="background:${a==='fund'||a==='convert'?'var(--good)':a==='defer'||a==='monthly'?'var(--warn)':'#991b1b'}">${a.toUpperCase()}</span>`;
-document.getElementById('run').onclick = async () => {
-  const url = kit === 'kit1' ? '/api/kit1/decide' : '/api/kit2/evaluate';
+document.getElementById('run').onclick = async () => {  const url = kit === 'kit1' ? '/api/kit1/decide' : '/api/kit2/evaluate';
   const body = kit === 'kit1' ? { preset: 'kit1' } : {};
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json();
@@ -50,6 +50,21 @@ document.getElementById('run').onclick = async () => {
     html = `<div class="card">${badge(j.choice)} <b>${j.choice} billing</b><br/><span class="small">${j.reason} · reconsider ${j.reconsider_on}</span><pre>${JSON.stringify(j.card_policy, null, 2)}</pre><div class="small">Simulated charge $${j.simulated_charge.amount}: ${j.simulated_charge.verdict} (${j.simulated_charge.reason})</div></div>`;
   }
   document.getElementById('out').innerHTML = html;
+};
+document.getElementById('exec').onclick = async () => {
+  const t = document.getElementById('trail');
+  t.innerHTML = '<p class="small">Executing live: quote → convert → beneficiary → transfer → SENT → PAID…</p>';
+  const r = await fetch('/api/kit1/execute-live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const j = await r.json();
+  const s = j.steps || {};
+  const step = (k, v) => `<div class="card"><b>${k}</b><br/><span class="small">${v}</span></div>`;
+  t.innerHTML = `<div class="card"><b>${j.live ? 'LIVE trail complete' : 'Stopped — see step'}</b></div>` +
+    step('Quote', (s.quote||{}).quote_id || JSON.stringify(s.quote||{})) +
+    step('Conversion', (s.conversion||{}).status || JSON.stringify(s.conversion||{})) +
+    step('Beneficiary', (s.beneficiary||{}).id || JSON.stringify(s.beneficiary||{})) +
+    step('Transfer', ((s.transfer||{}).id || '') + ' ' + ((s.transfer||{}).status || '')) +
+    step('Settlement', 'SENT → ' + ((s.sim_paid||{}).status || JSON.stringify(s))) +
+    (j.error ? `<div class="card"><b>Note</b><br/><span class="small">${j.error}<br/>${j.detail||''}</span></div>` : '');
 };
 </script>
 </body>
