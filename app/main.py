@@ -230,7 +230,9 @@ def kit2_setup_live(body: LiveIssuingIn):
     if not card["ok"]:
         return {"cardholder": holder["data"], "error": card["error"], "detail": card.get("detail", ""),
                 "live": False,
-                "hint": "account needs issuing enabled — email devhelp@airwallex.com"}
+                "hint": ("issuing API works (holder READY) but no card program type is enabled on "
+                         "this sandbox account — ask devhelp@airwallex.com to enable an allowed "
+                         "program type (PREPAID) per the issuing integration checklist")}
     cid = card["data"].get("card_id", "")
     frozen = call(f"/api/v1/issuing/cards/{cid}/update", {"card_status": "INACTIVE"})
     return {"cardholder": holder["data"], "card": card["data"],
