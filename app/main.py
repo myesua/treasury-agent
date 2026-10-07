@@ -104,6 +104,52 @@ def live_balances():
         return {"error": str(e)[:200], "live": False}
 
 
+def _cash_from_balances(raw: list[dict]) -> dict[str, Decimal]:
+    """Balances + simulation deposits read in MINOR units (verified: uniform
+    10,000,000 starter per currency; our 25000 deposit landed +25,000, not
+    +2,500,000). Transfers/FX take MAJOR units. Convert here so policy
+    numbers stay human ($5,000 floor, not 500000)."""
+    from decimal import Decimal
+
+    cash: dict[str, Decimal] = {}
+    for b in raw if isinstance(raw, list) else []:
+        cur = str(b.get("currency", ""))
+        amt = b.get("available_amount", 0) or 0
+        try:
+            cash[cur] = cash.get(cur, Decimal("0")) + Decimal(str(amt)) / 100
+        except Exception:
+            pass
+    return cash
+
+
+@app.post("/api/kit1/live-decide")
+def kit1_live_decide():
+    """Kit 1 decisions priced against the REAL funded wallet."""
+    from decimal import Decimal
+
+    try:
+        c = _client()
+        raw = c.balances()
+    except Exception as e:
+        return {"error": str(e)[:200], "live": False}
+    items = raw if isinstance(raw, list) else raw.get("items", [])
+    cash = _cash_from_balances(items)
+    obs = [
+        Obligation(o["id"], o["label"], Decimal(o["amount"]), o["currency"], o["due_hours"],
+                   stops_operations=o.get("stops_operations", False), time_sensitive=o.get("time_sensitive", False))
+        for o in KIT1_FIXTURES
+    ]
+    policy = TreasuryPolicy()
+    decisions = decide(obs, cash, policy)
+    return {
+        "cash": {k: str(v) for k, v in cash.items() if v > 0},
+        "reserve_floor": str(policy.reserve_floor),
+        "units_note": "cash in major units (balances endpoint reads minor); policy in major",
+        "decisions": [vars(d) | {"amount": str(d.amount)} for d in decisions],
+        "live": True,
+    }
+
+
 class DepositIn(BaseModel):
     currency: str = "USD"
     amount: str = "5000"
