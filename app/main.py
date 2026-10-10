@@ -309,7 +309,7 @@ def kit1_execute_live(body: LiveConvertIn):
 class LiveIssuingIn(BaseModel):
     first_name: str = "Demo"
     last_name: str = "Founder"
-    email: str = "demo-founder@example.com"
+    email: str = ""
 
 
 @app.post("/api/kit2/setup-live")
@@ -341,7 +341,8 @@ def kit2_setup_live(body: LiveIssuingIn):
             return {"ok": False, "error": msg[:160], "detail": detail}
 
     holder = call("/api/v1/issuing/cardholders/create", {
-        "type": "DELEGATE", "email": body.email,
+        "type": "DELEGATE",
+        "email": body.email or f"demo-founder-{int(__import__('time').time())}@example.com",
         "first_name": body.first_name, "last_name": body.last_name})
     if not holder["ok"]:
         return {"error": holder["error"], "detail": holder.get("detail", ""), "live": False,
